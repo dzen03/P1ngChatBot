@@ -1,7 +1,8 @@
 certifi==2024.2.2
 charset-normalizer==3.3.2
 idna==3.6
+prometheus_client==0.20.0
 psycopg2-binary==2.9.9
-pyTelegramBotAPI==4.16.0
+pyTelegramBotAPI==4.16.1
 requests==2.31.0
-urllib3==2.2.0
+urllib3==2.2.1

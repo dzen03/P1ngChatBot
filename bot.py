@@ -3,10 +3,21 @@ import datetime
 import time
 import psycopg2
 import re
+from prometheus_client import start_http_server, Summary, Counter
 
 import config
 
 bot = telebot.TeleBot(config.TELEGRAM_KEY)
+
+opt_in = Summary('opt_in_latency_seconds', 'Opt in latency')
+opt_out = Summary('opt_out_latency_seconds', 'Opt out latency')
+ping = Summary('ping_latency_seconds', 'Ping latency')
+lists = Summary('list_latency_seconds', 'List latency')
+inline = Summary('inline_latency_seconds', 'Inline latency')
+reply = Summary('reply_latency_seconds', 'Reply latency')
+
+exceptions = Counter('exception_counts', 'Exceptions count')
+exceptions_global = Counter('exception_global_counts', 'Global exceptions count')
 
 
 @bot.message_handler(commands=['create'])
@@ -32,6 +43,7 @@ def create(message):
         bot.set_message_reaction(message.chat.id, message.id, [telebot.types.ReactionTypeEmoji("👍")])
         bot.reply_to(message, rf"You created `@{args[1]}`\. Now you can `/opt_in {args[1]}`", parse_mode='MarkdownV2')
     except Exception:
+        exceptions.inc()
         bot.set_message_reaction(message.chat.id, message.id, [telebot.types.ReactionTypeEmoji("👎")])
 
 
@@ -69,6 +81,7 @@ def remove(message):
                          parse_mode='MarkdownV2')
         conn.close()
     except Exception:
+        exceptions.inc()
         print(exception)
         bot.set_message_reaction(message.chat.id, message.id, [telebot.types.ReactionTypeEmoji("👎")])
 
@@ -88,6 +101,7 @@ Also, there is inline mode: use `@{bot.get_me().username} ping` and `@{bot.get_m
 
 
 @bot.message_handler(commands=['opt_in', 'opt-in'])
+@opt_in.time()
 def opt_in(message):
     args = message.text.split(' ')
     if len(args) != 2:
@@ -104,10 +118,12 @@ def opt_in(message):
         conn.close()
         bot.set_message_reaction(message.chat.id, message.id, [telebot.types.ReactionTypeEmoji("👍")])
     except Exception:
+        exceptions.inc()
         bot.set_message_reaction(message.chat.id, message.id, [telebot.types.ReactionTypeEmoji("👎")])
 
 
 @bot.message_handler(commands=['opt_out', 'opt-out'])
+@opt_out.time()
 def opt_out(message):
     args = message.text.split(' ')
     if len(args) != 2:
@@ -123,10 +139,12 @@ def opt_out(message):
         conn.close()
         bot.set_message_reaction(message.chat.id, message.id, [telebot.types.ReactionTypeEmoji("👍")])
     except Exception:
+        exceptions.inc()
         bot.set_message_reaction(message.chat.id, message.id, [telebot.types.ReactionTypeEmoji("👎")])
 
 
 @bot.message_handler(commands=['list'])
+@lists.time()
 def list_(message):
     try:
         conn = psycopg2.connect(config.DATABASE_URL, sslmode='require')
@@ -158,10 +176,12 @@ def list_(message):
 
         bot.reply_to(message, ret)
     except Exception:
+        exceptions.inc()
         bot.set_message_reaction(message.chat.id, message.id, [telebot.types.ReactionTypeEmoji("👎")])
 
 
 @bot.message_handler(regexp=r'(.*[@/]\S+.*)')
+@ping.time()
 def ping(message):
     try:
         aliases = re.findall(r'.*?[@/](\S+).*?', message.text)
@@ -202,7 +222,7 @@ def ping(message):
         try:
             bot.delete_message(message.chat.id, message.id)
         except Exception:
-            pass
+            exceptions.inc()
 
         if len(user_ids) == 0:
             bot.send_message(message.chat.id, f'@{message.from_user.username} said "{message.text}".\n'
@@ -221,10 +241,12 @@ def ping(message):
             bot.send_message(message.chat.id,
                              f'...{msg[:-2]}{"..." if len(write) > ind + 1 else "."}')
     except Exception:
+        exceptions.inc()
         bot.reply_to(message, "Something went wrong")
 
 
 @bot.message_handler(regexp='(^(?![/]).*)')
+@reply.time()
 def check_reply(message):
     try:
         if message.reply_to_message is not None and message.reply_to_message.from_user.id == bot.get_me().id and \
@@ -232,13 +254,13 @@ def check_reply(message):
             try:
                 bot.delete_message(message.chat.id, message.id)
             except Exception:
-                pass
+                exceptions.inc()
 
             bot.reply_to(message.reply_to_message,
                          f'@{message.from_user.username} said "{message.text[:config.MESSAGE_LENGTH]}".\n'
                          f'Для: {message.reply_to_message.text.split(" ")[0]}')
     except Exception:
-        pass
+        exceptions.inc()
 
 
 @bot.inline_handler(lambda query: query.query == 'ping')
@@ -251,6 +273,7 @@ def opt_out_query(inline_query):
     inline_mode(inline_query, "/opt_out ")
 
 
+@inline.time()
 def inline_mode(inline_query, message):
     try:
         aliases = list()
@@ -273,16 +296,19 @@ def inline_mode(inline_query, message):
         conn.close()
         bot.answer_inline_query(inline_query.id, aliases, is_personal=True, cache_time=config.INLINE_CACHE_TIME)
     except Exception as e:
+        exceptions.inc()
         print(e)
 
 
 if __name__ == "__main__":
     try:
+        start_http_server(port=10000)
         print(f'I am @{bot.get_me().username} and I started at '
               f'{datetime.datetime.isoformat(datetime.datetime.now())}')
         bot.polling()
     except InterruptedError:
         exit(0)
     except Exception as exception:
+        exceptions_global.inc()
         print(exception)
         time.sleep(10)
